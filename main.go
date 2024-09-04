@@ -16,6 +16,6 @@ func main() {
 
     sm.Handle("/", http.FileServer(http.Dir(filepathRoot)))
     sm.Handle("/assets/logo.png", http.FileServer(http.Dir(filepathRoot)))
-    sm.Handle("pikachu.png", http.FileServer(http.Dir("./assets/")))
+    sm.Handle("/pikachu.png", http.FileServer(http.Dir("./assets/")))
     srv.ListenAndServe()
 }
