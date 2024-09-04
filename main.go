@@ -48,9 +48,10 @@ func (cfg *configApi) hitCount(w http.ResponseWriter, r *http.Request) {
     w.Write([]byte(fmt.Sprintf("Hits: %v", cfg.fileserverHits)))
 }
 
-func noProfaneWords(s *string) {
-    sa := strings.Split(*s, " ")
+func noProfaneWords(s string) string {
+    sa := strings.Split(s, " ")
     for i, v := range sa {
+        v = strings.ToLower(v)
         switch v {
         case "kerfuffle":
             sa[i] = "****"
@@ -60,12 +61,12 @@ func noProfaneWords(s *string) {
             sa[i] = "****"
         }
     }
-    *s = strings.Join(sa, " ")
+    return strings.Join(sa, " ")
 }
 
 func validateChirp(w http.ResponseWriter, r *http.Request) {
     type responseBodyOk struct {
-        Valid bool `json:"valid"`
+        Cleaned_body string `json:"cleaned_body"`
     }
     type responseBodyNotOk struct {
         Error string `json:"error"`
@@ -105,13 +106,10 @@ func validateChirp(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    // fmt.Println("Oll Klear")
     respBody := responseBodyOk{
-        Valid:true,
+        Cleaned_body: noProfaneWords(reqBody.Body),
     }
     jres, _ := json.Marshal(respBody)
-
-    // fmt.Println("Jres:", string(jres))
     w.Write(jres)
 }
 
