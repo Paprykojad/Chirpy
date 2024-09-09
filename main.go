@@ -29,6 +29,11 @@ func (cfg *configApi) resetCount(w http.ResponseWriter, r *http.Request) {
     cfg.fileserverHits = 0
 }
 
+func emoji(w http.ResponseWriter, r *http.Request) {
+    http.ServeFile(w, r, "./assets/emoji.html")
+}
+
+
 func (cfg *configApi) hitCountAdmin(w http.ResponseWriter, r *http.Request) {
     // w.Header().Add("Content-Type", "text/plain; charset=utf-8")
     t, err := template.ParseFiles("./admin/index.html")
@@ -127,9 +132,10 @@ func main() {
         fileserverHits: 0,
     }
 
-    sm.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(filepathRoot)))))
+    // sm.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(filepathRoot)))))
     sm.Handle("/assets/logo.png", http.FileServer(http.Dir(filepathRoot)))
     sm.Handle("/pikachu.png", http.FileServer(http.Dir("./assets/")))
+    sm.HandleFunc("/", emoji)
     sm.HandleFunc("POST /api/validate_chirp", validateChirp)
     sm.HandleFunc("GET /api/healthz", handlerReadiness)
     sm.HandleFunc("GET /api/metrics", apiCfg.hitCount)
