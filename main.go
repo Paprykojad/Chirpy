@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -114,21 +115,50 @@ func (crp *chirps) writeChirp (w http.ResponseWriter, r *http.Request) {
     mu.Lock()
     file, err := os.Create("database.json")
     if err != nil {
-        http.Error(w, "Something went wrong", 400)
+        http.Error(w, "Could not create database", 400)
         return
     }
     defer file.Close()
     writer := bufio.NewWriter(file)
     _, err = writer.Write(jsonChirps)
+    writer.Flush()
     if err != nil {
-        http.Error(w, "Something went wrong", 400)
+        http.Error(w, "Could not write to database", 400)
         return
     }
     mu.Unlock()
 
     w.Header().Add("Content-Type", "application/json")
     w.WriteHeader(201)
-    w.
+    jchirp, err := json.Marshal(chirp)
+    w.Write(jchirp)
+}
+
+func (crp *chirps) readChirps (w http.ResponseWriter, r *http.Request) {
+    jsonFile, err := os.Open("database.json")
+    if err != nil {
+        return
+    }
+    defer jsonFile.Close()
+
+    byteValue, err := io.ReadAll(jsonFile)
+    if err != nil {
+        return
+    }
+
+    crps := chirps{}
+    err = json.Unmarshal(byteValue, &crps)
+    fmt.Println("request body:", string(byteValue))
+    fmt.Println(err)
+    if err != nil {
+        http.Error(w, "Could not unmarshall request body", 400)
+        return
+    }
+
+    w.Header().Add("Content-Type", "application/json")
+    // w.WriteHeader(201)
+    jchirps, err := json.Marshal(crp.Chirps)
+    w.Write(jchirps)
 }
 
 func main() {
@@ -145,7 +175,6 @@ func main() {
         fileserverHits: 0,
     }
 
-<<<<<<< Updated upstream
     crps := chirps{
         Chirps: []chirp{},
     }
@@ -154,15 +183,11 @@ func main() {
     sm.Handle("/assets/logo.png", http.FileServer(http.Dir(filepathRoot)))
     sm.Handle("/pikachu.png", http.FileServer(http.Dir("./assets/")))
     sm.HandleFunc("POST /api/chirps", crps.writeChirp)
-=======
-    sm.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(filepathRoot)))))
-    sm.Handle("/assets/logo.png", http.FileServer(http.Dir(filepathRoot)))
-    sm.Handle("/pikachu.png", http.FileServer(http.Dir("./assets/")))
-    sm.HandleFunc("POST /api/validate_chirp", validateChirp)
->>>>>>> Stashed changes
+    sm.HandleFunc("GET /api/chirps", crps.readChirps)
     sm.HandleFunc("GET /api/healthz", handlerReadiness)
     sm.HandleFunc("GET /api/metrics", apiCfg.hitCount)
     sm.HandleFunc("GET /admin/metrics", apiCfg.hitCountAdmin)
     sm.HandleFunc("/api/reset", apiCfg.resetCount)
+    fmt.Println("Serving on port:", port)
     srv.ListenAndServe()
 }
