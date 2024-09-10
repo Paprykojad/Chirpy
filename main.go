@@ -1,15 +1,27 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"net/http"
+	"os"
 	"strings"
+	"sync"
 )
 
 type configApi struct {
     fileserverHits int
+}
+
+type chirp struct {
+    Id int `json:"id"`
+    Body string `json:"body"`
+}
+
+type chirps struct {
+    Chirps []chirp `json:"chirps"`
 }
 
 func handlerReadiness(w http.ResponseWriter, r *http.Request) {
@@ -48,7 +60,10 @@ func (cfg *configApi) hitCount(w http.ResponseWriter, r *http.Request) {
     w.Write([]byte(fmt.Sprintf("Hits: %v", cfg.fileserverHits)))
 }
 
-func noProfaneWords(s string) string {
+func noProfaneWords(s string) (string, error) {
+    if len(s) > 140 {
+        return "", fmt.Errorf("Chirp was too long")
+    }
     sa := strings.Split(s, " ")
     for i, v := range sa {
         v = strings.ToLower(v)
@@ -61,56 +76,59 @@ func noProfaneWords(s string) string {
             sa[i] = "****"
         }
     }
-    return strings.Join(sa, " ")
+    return strings.Join(sa, " "), nil
 }
 
-func validateChirp(w http.ResponseWriter, r *http.Request) {
-    type responseBodyOk struct {
-        Cleaned_body string `json:"cleaned_body"`
-    }
-    type responseBodyNotOk struct {
-        Error string `json:"error"`
-    }
+func (crp *chirps) writeChirp (w http.ResponseWriter, r *http.Request) {
     type requestBody struct {
         Body string `json:"body"`
     }
-    w.Header().Add("Content-Type", "application/json")
 
     reqBody := requestBody{}
-
     decoder := json.NewDecoder(r.Body)
     defer r.Body.Close()
     err := decoder.Decode(&reqBody)
-    // fmt.Println("Request struct:", reqBody.Body)
-
     if err != nil {
-        // fmt.Println("Error with decoding json")
-        respBody := responseBodyNotOk{
-            Error: "Something went wrong",
-        }
-        w.WriteHeader(400)
-        json, _ := json.Marshal(respBody)
-        w.Write([]byte(json))
+        http.Error(w, "Something went wrong", 400)
         return
-    } 
-
-    if len(reqBody.Body) > 140 {
-        // fmt.Println("Chirp is too long")
-        respBody := responseBodyNotOk{
-            Error: "Chirp was too long",
-        }
-        w.WriteHeader(400)
-        var jsn []byte
-        jsn, _ = json.Marshal(respBody)
-        w.Write([]byte(jsn))
+    }
+    body, err := noProfaneWords(reqBody.Body)
+    if err != nil {
+        http.Error(w, "Chirp was too long", 400)
         return
     }
 
-    respBody := responseBodyOk{
-        Cleaned_body: noProfaneWords(reqBody.Body),
+    chirp := chirp{
+        Id: len(crp.Chirps)+1,
+        Body: body,
     }
-    jres, _ := json.Marshal(respBody)
-    w.Write(jres)
+    crp.Chirps = append(crp.Chirps, chirp)
+
+    jsonChirps, err := json.MarshalIndent(crp, "", "    ")
+    if err != nil {
+        http.Error(w, "Something went wrong", 400)
+        return
+    }
+
+    var mu sync.Mutex
+    mu.Lock()
+    file, err := os.Create("database.json")
+    if err != nil {
+        http.Error(w, "Something went wrong", 400)
+        return
+    }
+    defer file.Close()
+    writer := bufio.NewWriter(file)
+    _, err = writer.Write(jsonChirps)
+    if err != nil {
+        http.Error(w, "Something went wrong", 400)
+        return
+    }
+    mu.Unlock()
+
+    w.Header().Add("Content-Type", "application/json")
+    w.WriteHeader(201)
+    w.
 }
 
 func main() {
@@ -127,10 +145,14 @@ func main() {
         fileserverHits: 0,
     }
 
+    crps := chirps{
+        Chirps: []chirp{},
+    }
+
     sm.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(filepathRoot)))))
     sm.Handle("/assets/logo.png", http.FileServer(http.Dir(filepathRoot)))
     sm.Handle("/pikachu.png", http.FileServer(http.Dir("./assets/")))
-    sm.HandleFunc("POST /api/validate_chirp", validateChirp)
+    sm.HandleFunc("POST /api/chirps", crps.writeChirp)
     sm.HandleFunc("GET /api/healthz", handlerReadiness)
     sm.HandleFunc("GET /api/metrics", apiCfg.hitCount)
     sm.HandleFunc("GET /admin/metrics", apiCfg.hitCountAdmin)
