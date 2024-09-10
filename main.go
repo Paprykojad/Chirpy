@@ -145,6 +145,7 @@ func main() {
         fileserverHits: 0,
     }
 
+<<<<<<< Updated upstream
     crps := chirps{
         Chirps: []chirp{},
     }
@@ -153,6 +154,12 @@ func main() {
     sm.Handle("/assets/logo.png", http.FileServer(http.Dir(filepathRoot)))
     sm.Handle("/pikachu.png", http.FileServer(http.Dir("./assets/")))
     sm.HandleFunc("POST /api/chirps", crps.writeChirp)
+=======
+    sm.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(filepathRoot)))))
+    sm.Handle("/assets/logo.png", http.FileServer(http.Dir(filepathRoot)))
+    sm.Handle("/pikachu.png", http.FileServer(http.Dir("./assets/")))
+    sm.HandleFunc("POST /api/validate_chirp", validateChirp)
+>>>>>>> Stashed changes
     sm.HandleFunc("GET /api/healthz", handlerReadiness)
     sm.HandleFunc("GET /api/metrics", apiCfg.hitCount)
     sm.HandleFunc("GET /admin/metrics", apiCfg.hitCountAdmin)
