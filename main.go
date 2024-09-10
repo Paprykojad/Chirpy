@@ -162,6 +162,7 @@ func (crp *chirps) readChirps (w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+    os.Remove("database.json")
     filepathRoot := "."
     port := "8080"
 
@@ -184,6 +185,7 @@ func main() {
     sm.Handle("/pikachu.png", http.FileServer(http.Dir("./assets/")))
     sm.HandleFunc("POST /api/chirps", crps.writeChirp)
     sm.HandleFunc("GET /api/chirps", crps.readChirps)
+    sm.HandleFunc("GET /api/chirps/", crps.readChirps)
     sm.HandleFunc("GET /api/healthz", handlerReadiness)
     sm.HandleFunc("GET /api/metrics", apiCfg.hitCount)
     sm.HandleFunc("GET /admin/metrics", apiCfg.hitCountAdmin)
