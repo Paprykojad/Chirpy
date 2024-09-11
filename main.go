@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -21,8 +22,14 @@ type chirp struct {
     Body string `json:"body"`
 }
 
+type user struct {
+    Id int `json:"id"`
+    Email string `json:"email"`
+}
+
 type chirps struct {
     Chirps []chirp `json:"chirps"`
+    Users []user `json:"users"`
 }
 
 func handlerReadiness(w http.ResponseWriter, r *http.Request) {
@@ -105,28 +112,9 @@ func (crp *chirps) writeChirp (w http.ResponseWriter, r *http.Request) {
     }
     crp.Chirps = append(crp.Chirps, chirp)
 
-    jsonChirps, err := json.MarshalIndent(crp, "", "    ")
-    if err != nil {
-        http.Error(w, "Something went wrong", 400)
-        return
+    if err = crp.writeDatabase(); err != nil {
+        http.Error(w, "Database broke down", 400)
     }
-
-    var mu sync.Mutex
-    mu.Lock()
-    file, err := os.Create("database.json")
-    if err != nil {
-        http.Error(w, "Could not create database", 400)
-        return
-    }
-    defer file.Close()
-    writer := bufio.NewWriter(file)
-    _, err = writer.Write(jsonChirps)
-    writer.Flush()
-    if err != nil {
-        http.Error(w, "Could not write to database", 400)
-        return
-    }
-    mu.Unlock()
 
     w.Header().Add("Content-Type", "application/json")
     w.WriteHeader(201)
@@ -134,7 +122,49 @@ func (crp *chirps) writeChirp (w http.ResponseWriter, r *http.Request) {
     w.Write(jchirp)
 }
 
+func (crp *chirps) writeDatabase() (error) {
+    jsonChirps, err := json.MarshalIndent(crp, "", "    ")
+    if err != nil {
+        return err
+    }
+
+    var mu sync.Mutex
+    mu.Lock()
+    file, err := os.Create("database.json")
+    if err != nil {
+        return err
+    }
+    defer file.Close()
+    writer := bufio.NewWriter(file)
+    _, err = writer.Write(jsonChirps)
+    writer.Flush()
+    if err != nil {
+        return err
+    }
+    mu.Unlock()
+
+    return nil
+}
+
 func (crp *chirps) readChirps (w http.ResponseWriter, r *http.Request) {
+
+    chi, _ := json.MarshalIndent(crp.Chirps, "", "    ")
+    fmt.Println("Stored chirps:", string(chi))
+
+    path := r.URL.Path
+    if path != "/api/chirps/" || path != "/api/chirps" {
+        path, _ := strings.CutPrefix(path, "/api/chirps/")
+        id, _ := strconv.Atoi(path)
+        if id > len(crp.Chirps) {
+            http.Error(w, fmt.Sprintf("Chirp id:%v does not exist", id), 404)
+            return
+        }
+        jresp, _ := json.Marshal(crp.Chirps[id-1])
+        w.Header().Add("Content-Type", "application/json")
+        w.Write(jresp)
+        return
+    }
+
     jsonFile, err := os.Open("database.json")
     if err != nil {
         return
@@ -161,14 +191,36 @@ func (crp *chirps) readChirps (w http.ResponseWriter, r *http.Request) {
     w.Write(jchirps)
 }
 
+func (crp *chirps) addUser (w http.ResponseWriter, r *http.Request) {
+    reqBody := user{}
+    decoder := json.NewDecoder(r.Body)
+    defer r.Body.Close()
+    err := decoder.Decode(&reqBody)
+    if err != nil {
+        http.Error(w, "Something went wrong", 400)
+        return
+    }
+    reqBody.Id = len(crp.Users)+1
+    crp.Users = append(crp.Users, reqBody)
+
+    if err = crp.writeDatabase(); err != nil {
+        http.Error(w, "Database broke down", 400)
+    }
+
+    w.Header().Add("Content-Type", "application/json")
+    w.WriteHeader(201)
+    jresp, _ := json.Marshal(crp.Users[len(crp.Users)-1])
+    w.Write(jresp)
+}
+
 func main() {
     os.Remove("database.json")
     filepathRoot := "."
     port := "8080"
 
-    sm := http.NewServeMux()
+    mux := http.NewServeMux()
     srv := http.Server{
-        Handler: sm,
+        Handler: mux,
         Addr: ":" + port,
     }
 
@@ -178,18 +230,20 @@ func main() {
 
     crps := chirps{
         Chirps: []chirp{},
+        Users: []user{},
     }
 
-    sm.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(filepathRoot)))))
-    sm.Handle("/assets/logo.png", http.FileServer(http.Dir(filepathRoot)))
-    sm.Handle("/pikachu.png", http.FileServer(http.Dir("./assets/")))
-    sm.HandleFunc("POST /api/chirps", crps.writeChirp)
-    sm.HandleFunc("GET /api/chirps", crps.readChirps)
-    sm.HandleFunc("GET /api/chirps/", crps.readChirps)
-    sm.HandleFunc("GET /api/healthz", handlerReadiness)
-    sm.HandleFunc("GET /api/metrics", apiCfg.hitCount)
-    sm.HandleFunc("GET /admin/metrics", apiCfg.hitCountAdmin)
-    sm.HandleFunc("/api/reset", apiCfg.resetCount)
+    mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(filepathRoot)))))
+    mux.Handle("/assets/logo.png", http.FileServer(http.Dir(filepathRoot)))
+    mux.Handle("/pikachu.png", http.FileServer(http.Dir("./assets/")))
+    mux.HandleFunc("POST /api/chirps", crps.writeChirp)
+    mux.HandleFunc("GET /api/chirps/", crps.readChirps)
+    mux.HandleFunc("POST /api/users", crps.addUser)
+    mux.HandleFunc("GET /api/healthz", handlerReadiness)
+    mux.HandleFunc("GET /api/metrics", apiCfg.hitCount)
+    mux.HandleFunc("GET /admin/metrics", apiCfg.hitCountAdmin)
+    mux.HandleFunc("/api/reset", apiCfg.resetCount)
+    
     fmt.Println("Serving on port:", port)
     srv.ListenAndServe()
 }
