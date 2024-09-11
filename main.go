@@ -1,6 +1,7 @@
 package main
 
 import (
+    "golang.org/x/crypto/bcrypt"
 	"bufio"
 	"encoding/json"
 	"fmt"
@@ -24,6 +25,7 @@ type chirp struct {
 
 type user struct {
     Id int `json:"id"`
+    password []byte 
     Email string `json:"email"`
 }
 
@@ -192,25 +194,83 @@ func (crp *chirps) readChirps (w http.ResponseWriter, r *http.Request) {
 }
 
 func (crp *chirps) addUser (w http.ResponseWriter, r *http.Request) {
-    reqBody := user{}
+    type userData struct {
+        Password string `json:"password"`
+        Email string `json:"email"`
+    }
+
+    type userDataResponse struct {
+        Id int `json:"id"`
+        Email string `json:"email"`
+    }
+
+    reqBody := userData{}
     decoder := json.NewDecoder(r.Body)
     defer r.Body.Close()
     err := decoder.Decode(&reqBody)
     if err != nil {
-        http.Error(w, "Something went wrong", 400)
+        http.Error(w, err.Error(), 400)
         return
     }
-    reqBody.Id = len(crp.Users)+1
-    crp.Users = append(crp.Users, reqBody)
+    passwd, _ := bcrypt.GenerateFromPassword([]byte(reqBody.Password), bcrypt.DefaultCost)
+    reqBody.Password = string(passwd)
+    var user user = user{
+        password: []byte(reqBody.Password),
+        Email: reqBody.Email,
+        Id: len(crp.Users)+1,
+    }
+    crp.Users = append(crp.Users, user)
 
     if err = crp.writeDatabase(); err != nil {
-        http.Error(w, "Database broke down", 400)
+        http.Error(w, "Database error", 400)
     }
 
-    w.Header().Add("Content-Type", "application/json")
+    userDataResp := userDataResponse{
+        Id: crp.Users[len(crp.Users)-1].Id,
+        Email: crp.Users[len(crp.Users)-1].Email,
+    }
+
     w.WriteHeader(201)
-    jresp, _ := json.Marshal(crp.Users[len(crp.Users)-1])
+    jresp, _ := json.Marshal(userDataResp)
     w.Write(jresp)
+}
+
+func (crp *chirps) login (w http.ResponseWriter, r *http.Request) {
+    type userData struct {
+        Password string `json:"password"`
+        Email string `json:"email"`
+    }
+    type userDataResponse struct {
+        Id int `json:"id"`
+        Email string `json:"email"`
+    }
+
+    reqBody := userData{}
+    decoder := json.NewDecoder(r.Body)
+    err := decoder.Decode(&reqBody)
+    if err != nil {
+        http.Error(w,err.Error(), 400)
+        return
+    }
+    for _, v := range crp.Users {
+        if v.Email == reqBody.Email {
+            err = bcrypt.CompareHashAndPassword(v.password, []byte(reqBody.Password))
+            if err != nil {
+                http.Error(w, "Unauthorized", 401)
+                return
+            } else {
+                w.Header().Add("Content-Type", "application/json")
+                w.WriteHeader(200)
+                userDataResp := userDataResponse{
+                    Id: v.Id,
+                    Email: v.Email,
+                }
+                jresp, _ := json.Marshal(userDataResp)
+                w.Write(jresp)
+                return
+            }
+        }
+    }
 }
 
 func main() {
@@ -239,6 +299,7 @@ func main() {
     mux.HandleFunc("POST /api/chirps", crps.writeChirp)
     mux.HandleFunc("GET /api/chirps/", crps.readChirps)
     mux.HandleFunc("POST /api/users", crps.addUser)
+    mux.HandleFunc("/api/login", crps.login)
     mux.HandleFunc("GET /api/healthz", handlerReadiness)
     mux.HandleFunc("GET /api/metrics", apiCfg.hitCount)
     mux.HandleFunc("GET /admin/metrics", apiCfg.hitCountAdmin)
