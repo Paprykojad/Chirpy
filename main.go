@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -33,6 +35,8 @@ type user struct {
 	password []byte
 	Email    string  `json:"email"`
 	Token    *string `json:"token"`
+    RefreshToken string `json:"refresh_token"`
+    EpxDate time.Time `json:"exp_date"`
 }
 
 type chirps struct {
@@ -247,12 +251,12 @@ func wrapperLogin(crp *chirps, confApi *configApi) (login http.HandlerFunc) {
         type userData struct {
             Password string `json:"password"`
             Email    string `json:"email"`
-            Exp      *int   `json:"expires_in_seconds"`
         }
         type userDataResponse struct {
             Id    int    `json:"id"`
             Email string `json:"email"`
             Token string `json:"token"`
+            RefreshToken string `json:"refresh_token"`
         }
 
         reqBody := userData{}
@@ -263,20 +267,27 @@ func wrapperLogin(crp *chirps, confApi *configApi) (login http.HandlerFunc) {
             return
         }
 
+        refreshToken := make([]byte, 32)
+        rand.Read(refreshToken)
+        refreshTokenString := hex.EncodeToString(refreshToken)
+
+        for i, v := range crp.Users {
+            if v.Email == reqBody.Email {
+                crp.Users[i].RefreshToken = refreshTokenString
+                crp.Users[i].EpxDate = time.Now().Add(time.Hour * 24 * 60)
+            }
+        }
+
         token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
             Issuer:   "chirpy",
             IssuedAt: jwt.NewNumericDate(time.Now()),
             ExpiresAt: func() *jwt.NumericDate {
                 for _, v := range crp.Users {
                     if v.Email == reqBody.Email {
-                        if reqBody.Exp == nil || *reqBody.Exp > 60*60*24 {
-                            return jwt.NewNumericDate(time.Now().Add(time.Second * time.Duration(60*60*24)))
-                        } else {
-                            return jwt.NewNumericDate(time.Now().Add(time.Second * time.Duration(*reqBody.Exp)))
-                        }
+                        return jwt.NewNumericDate(time.Now().Add(time.Hour * 1))
                     }
                 }
-                return jwt.NewNumericDate(time.Now().Add(time.Second * time.Duration(60*60*24)))
+                return jwt.NewNumericDate(time.Now().Add(time.Hour * 1))
             }(),
             Subject: func() string {
                 for _, v := range crp.Users {
@@ -288,7 +299,7 @@ func wrapperLogin(crp *chirps, confApi *configApi) (login http.HandlerFunc) {
                 return ""
             }(),
         })
-        fmt.Println("Token:", token)
+        // fmt.Println("Token:", token)
 
         tokenString, err := token.SignedString([]byte(confApi.jwtSecret))
         if err != nil {
@@ -311,9 +322,10 @@ func wrapperLogin(crp *chirps, confApi *configApi) (login http.HandlerFunc) {
                         Id:    v.Id,
                         Email: v.Email,
                         Token: tokenString,
+                        RefreshToken: refreshTokenString,
                     }
                     jresp, _ := json.MarshalIndent(userDataResp, "", "    ")
-                    fmt.Println("Sending back:", string(jresp))
+                    // fmt.Println("Sending back:", string(jresp))
                     w.Write(jresp)
                     return
                 }
@@ -325,17 +337,17 @@ func wrapperLogin(crp *chirps, confApi *configApi) (login http.HandlerFunc) {
 func wrapperUpdateUser(crps *chirps, confApi *configApi) (updateUser http.HandlerFunc) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tokenstr := r.Header.Get("Authorization")
-		fmt.Println("Tokenstr:", tokenstr)
+		// fmt.Println("Tokenstr:", tokenstr)
 		tokenstrarr := strings.Split(tokenstr, " ")
 		if len(tokenstrarr) <= 1 {
 			http.Error(w, fmt.Sprintf("Unathorized (token: \"%v\")", tokenstr), 401)
 			return
 		}
 		tokenstr = tokenstrarr[1]
-		fmt.Println("Tokenstr:", tokenstr)
+		// fmt.Println("Tokenstr:", tokenstr)
 
 		claimsStruct := jwt.RegisteredClaims{}
-		fmt.Printf("tokenstr: %v \njwtSecret: %v\n\n", tokenstr, confApi.jwtSecret)
+		// fmt.Printf("tokenstr: %v \njwtSecret: %v\n\n", tokenstr, confApi.jwtSecret)
 		token, err := jwt.ParseWithClaims(tokenstr, &claimsStruct, func(t *jwt.Token) (interface{}, error) { return []byte(confApi.jwtSecret), nil })
 		if err != nil {
 			http.Error(w, "Unauthorized (cannot parse)", 401)
@@ -388,6 +400,70 @@ func wrapperUpdateUser(crps *chirps, confApi *configApi) (updateUser http.Handle
 	}
 }
 
+func wrapperRefreshToken (crp *chirps, confApi *configApi) (http.HandlerFunc) {
+    return func (w http.ResponseWriter, r *http.Request) {
+
+        type resp struct {
+            TokenStr string `json:"token"`
+        }
+
+        refToken := r.Header.Get("Authorization")
+        refToken = strings.TrimPrefix(refToken, "Bearer ")
+        // fmt.Printf("Recieved refresh token: %v\n", refToken)
+        for _, v := range crp.Users {
+            fmt.Printf("v.RefreshToken: %v\n", v.RefreshToken)
+            if v.RefreshToken == refToken && v.EpxDate.After(time.Now()){
+                token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
+                    Issuer:   "chirpy",
+                    IssuedAt: jwt.NewNumericDate(time.Now()),
+                    ExpiresAt: func() *jwt.NumericDate {
+                        return jwt.NewNumericDate(time.Now().Add(time.Hour * 1))
+                    }(),
+                    Subject: func() string {
+                        return strconv.Itoa(v.Id)
+                    }(),
+                })
+                tokenStr, err := token.SignedString([]byte(confApi.jwtSecret))
+                if err != nil {
+                    http.Error(w, err.Error(), 400)
+                    return
+                }
+
+                response := resp{
+                    TokenStr: tokenStr,
+                }
+                jresp, _ := json.Marshal(response)
+                w.Write(jresp)
+                return
+            }
+        }
+        http.Error(w, "", 401)
+    }
+}
+
+
+func wrapperRevokeToken (crp *chirps, confApi *configApi) (http.HandlerFunc) {
+    return func (w http.ResponseWriter, r *http.Request) {
+        type resp struct {
+            TokenStr string `json:"token"`
+        }
+
+        refToken := r.Header.Get("Authorization")
+        refToken = strings.TrimPrefix(refToken, "Bearer ")
+        // fmt.Printf("Recieved refresh token: %v\n", refToken)
+        for i, v := range crp.Users {
+            fmt.Printf("v.RefreshToken: %v\n", v.RefreshToken)
+            if v.RefreshToken == refToken && v.EpxDate.After(time.Now()){
+                crp.Users[i].RefreshToken = ""
+                crp.Users[i].EpxDate = time.Now()
+                w.WriteHeader(204)
+                w.Write(nil)
+            }
+        }
+        http.Error(w, "", 401)
+    }
+}
+
 func main() {
 	os.Remove("database.json")
 	godotenv.Load(".env")
@@ -417,10 +493,11 @@ func main() {
 	mux.HandleFunc("POST /api/chirps", crps.writeChirp)
 	mux.HandleFunc("GET /api/chirps/", crps.readChirps)
 	mux.HandleFunc("POST /api/users", crps.addUser)
-	// mux.HandleFunc("PUT /api/users", crps.updateUser)
 	mux.HandleFunc("PUT /api/users", wrapperUpdateUser(&crps, &apiCfg))
 	mux.HandleFunc("/api/login", wrapperLogin(&crps, &apiCfg))
 	mux.HandleFunc("GET /api/healthz", handlerReadiness)
+    mux.HandleFunc("POST /api/refresh", wrapperRefreshToken(&crps, &apiCfg))
+    mux.HandleFunc("POST /api/revoke", wrapperRevokeToken(&crps, &apiCfg))
 	mux.HandleFunc("GET /api/metrics", apiCfg.hitCount)
 	mux.HandleFunc("GET /admin/metrics", apiCfg.hitCountAdmin)
 	mux.HandleFunc("/api/reset", apiCfg.resetCount)
