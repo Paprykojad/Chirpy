@@ -28,6 +28,7 @@ type configApi struct {
 type chirp struct {
 	Id   int    `json:"id"`
 	Body string `json:"body"`
+    AuthorId int `json:"author_id"`
 }
 
 type user struct {
@@ -99,40 +100,102 @@ func noProfaneWords(s string) (string, error) {
 	return strings.Join(sa, " "), nil
 }
 
-func (crp *chirps) writeChirp(w http.ResponseWriter, r *http.Request) {
-	type requestBody struct {
-		Body string `json:"body"`
-	}
+func wrapperDeleteChirp (crp *chirps, confApi *configApi) (http.HandlerFunc){
+    return func (w http.ResponseWriter, r *http.Request) {
+        tokenstr := r.Header.Get("Authorization")
+        tokenstr = strings.TrimPrefix(tokenstr, "Bearer ")
+        fmt.Println("Tokenstr:", tokenstr)
 
-	reqBody := requestBody{}
-	decoder := json.NewDecoder(r.Body)
-	defer r.Body.Close()
-	err := decoder.Decode(&reqBody)
-	if err != nil {
-		http.Error(w, "Something went wrong", 400)
-		return
-	}
-	body, err := noProfaneWords(reqBody.Body)
-	if err != nil {
-		http.Error(w, "Chirp was too long", 400)
-		return
-	}
+		claimsStruct := jwt.RegisteredClaims{}
+		token, err := jwt.ParseWithClaims(tokenstr, &claimsStruct, func(t *jwt.Token) (interface{}, error) { return []byte(confApi.jwtSecret), nil })
+        fmt.Println("Rozpakowałem token")
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
 
-	chirp := chirp{
-		Id:   len(crp.Chirps) + 1,
-		Body: body,
-	}
-	// fmt.Println("Appending:", chirp)
-	crp.Chirps = append(crp.Chirps, chirp)
+        strNum := strings.TrimPrefix(r.URL.Path, "/api/chirps/")
+        num, _ := strconv.Atoi(strNum)
 
-	if err = crp.writeDatabase(); err != nil {
-		http.Error(w, "Database broke down", 400)
-	}
+        fmt.Printf("Chirp Id: %v\n", num)
 
-	w.Header().Add("Content-Type", "application/json")
-	w.WriteHeader(201)
-	jchirp, err := json.Marshal(chirp)
-	w.Write(jchirp)
+        for i, v := range crp.Chirps {
+            if t, _ := token.Claims.GetSubject(); t == strconv.Itoa(v.Id) && v.AuthorId == num  {
+                if date, _ := token.Claims.GetExpirationTime(); date.After(time.Now()) {
+                    crp.Chirps[i].Id = len(crp.Chirps)+1
+                    w.Header().Add("Content-Type", "application/json")
+                    w.WriteHeader(204)
+                    w.Write(nil)
+                    return
+                }
+            }
+        }
+        http.Error(w, "Unauthorized", 403)
+        return
+    }
+}
+
+func wrapperWriteChirp (crp *chirps, confApi *configApi) (http.HandlerFunc){
+    return func (w http.ResponseWriter, r *http.Request) {
+        type requestBody struct {
+            Body string `json:"body"`
+        }
+        tokenstr := r.Header.Get("Authorization")
+        tokenstr = strings.TrimPrefix(tokenstr, "Bearer ")
+        // fmt.Println("Tokenstr:", tokenstr)
+
+		claimsStruct := jwt.RegisteredClaims{}
+		// fmt.Printf("tokenstr: %v \njwtSecret: %v\n\n", tokenstr, confApi.jwtSecret)
+		token, err := jwt.ParseWithClaims(tokenstr, &claimsStruct, func(t *jwt.Token) (interface{}, error) { return []byte(confApi.jwtSecret), nil })
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+
+        for _, v := range crp.Users {
+            // tt, _ := token.Claims.GetSubject()
+            // fmt.Printf("t: %v\n", tt)
+            if t, _ := token.Claims.GetSubject(); t == strconv.Itoa(v.Id)  {
+                if date, _ := token.Claims.GetExpirationTime(); date.After(time.Now()) {
+                    reqBody := requestBody{}
+                    decoder := json.NewDecoder(r.Body)
+                    defer r.Body.Close()
+                    err := decoder.Decode(&reqBody)
+                    if err != nil {
+                        http.Error(w, "Something went wrong", 400)
+                        return
+                    }
+                    body, err := noProfaneWords(reqBody.Body)
+                    if err != nil {
+                        http.Error(w, "Chirp was too long", 400)
+                        return
+                    }
+
+                    authorIdInt, err := strconv.Atoi(t)
+                    chirp := chirp{
+                        Id:   len(crp.Chirps) + 1,
+                        Body: body,
+                        AuthorId: authorIdInt,
+                    }
+                    // fmt.Println("Appending:", chirp)
+                    crp.Chirps = append(crp.Chirps, chirp)
+
+                    if err = crp.writeDatabase(); err != nil {
+                        http.Error(w, "Database broke down", 400)
+                        return
+                    }
+
+                    w.Header().Add("Content-Type", "application/json")
+                    w.WriteHeader(201)
+                    jchirp, err := json.Marshal(chirp)
+                    w.Write(jchirp)
+                    return
+                }
+            }
+        }
+        http.Error(w, "Unauthorized", 401)
+        return
+    }
 }
 
 func (crp *chirps) writeDatabase() error {
@@ -160,15 +223,14 @@ func (crp *chirps) writeDatabase() error {
 }
 
 func (crp *chirps) readChirps(w http.ResponseWriter, r *http.Request) {
-
 	chi, _ := json.MarshalIndent(crp.Chirps, "", "    ")
 	fmt.Println("Stored chirps:", string(chi))
 
 	path := r.URL.Path
-	if path != "/api/chirps/" || path != "/api/chirps" {
+	if path != "/api/chirps/" && path != "/api/chirps" {
 		path, _ := strings.CutPrefix(path, "/api/chirps/")
 		id, _ := strconv.Atoi(path)
-		if id > len(crp.Chirps) {
+		if id > len(crp.Chirps) || id <= 0 {
 			http.Error(w, fmt.Sprintf("Chirp id:%v does not exist", id), 404)
 			return
 		}
@@ -490,14 +552,15 @@ func main() {
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(filepathRoot)))))
 	mux.Handle("/assets/logo.png", http.FileServer(http.Dir(filepathRoot)))
 	mux.Handle("/pikachu.png", http.FileServer(http.Dir("./assets/")))
-	mux.HandleFunc("POST /api/chirps", crps.writeChirp)
+	mux.HandleFunc("POST /api/chirps", wrapperWriteChirp(&crps, &apiCfg))
+	mux.HandleFunc("DELETE /api/chirps/", wrapperDeleteChirp(&crps, &apiCfg))
 	mux.HandleFunc("GET /api/chirps/", crps.readChirps)
 	mux.HandleFunc("POST /api/users", crps.addUser)
 	mux.HandleFunc("PUT /api/users", wrapperUpdateUser(&crps, &apiCfg))
 	mux.HandleFunc("/api/login", wrapperLogin(&crps, &apiCfg))
 	mux.HandleFunc("GET /api/healthz", handlerReadiness)
     mux.HandleFunc("POST /api/refresh", wrapperRefreshToken(&crps, &apiCfg))
-    mux.HandleFunc("POST /api/revoke", wrapperRevokeToken(&crps, &apiCfg))
+    mux.HandleFunc("post /api/revoke", wrapperRevokeToken(&crps, &apiCfg))
 	mux.HandleFunc("GET /api/metrics", apiCfg.hitCount)
 	mux.HandleFunc("GET /admin/metrics", apiCfg.hitCountAdmin)
 	mux.HandleFunc("/api/reset", apiCfg.resetCount)
