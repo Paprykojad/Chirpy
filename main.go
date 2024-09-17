@@ -38,6 +38,7 @@ type user struct {
 	Token    *string `json:"token"`
     RefreshToken string `json:"refresh_token"`
     EpxDate time.Time `json:"exp_date"`
+    Red bool `json:"is_chirpy_red"`
 }
 
 type chirps struct {
@@ -240,6 +241,20 @@ func (crp *chirps) readChirps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+    if s := r.URL.Query().Get("author_id"); s != "" {
+        idint, _ := strconv.Atoi(s)
+        userschirps := []string{}
+        for _, v := range crp.Chirps {
+            if v.AuthorId == idint {
+                userschirps = append(userschirps, v.Body)
+            }
+        }
+        jresp, _ := json.Marshal(userschirps)
+        w.Header().Add("Content-Type", "application/json")
+        w.Write(jresp)
+        return
+    }
+
 	jsonFile, err := os.Open("database.json")
 	if err != nil {
 		return
@@ -275,6 +290,7 @@ func (crp *chirps) addUser(w http.ResponseWriter, r *http.Request) {
 	type userDataResponse struct {
 		Id    int    `json:"id"`
 		Email string `json:"email"`
+        Red bool `json:"is_chirpy_red"`
 	}
 
 	reqBody := userData{}
@@ -301,6 +317,7 @@ func (crp *chirps) addUser(w http.ResponseWriter, r *http.Request) {
 	userDataResp := userDataResponse{
 		Id:    crp.Users[len(crp.Users)-1].Id,
 		Email: crp.Users[len(crp.Users)-1].Email,
+		Red: crp.Users[len(crp.Users)-1].Red,
 	}
 
 	w.WriteHeader(201)
@@ -319,6 +336,7 @@ func wrapperLogin(crp *chirps, confApi *configApi) (login http.HandlerFunc) {
             Email string `json:"email"`
             Token string `json:"token"`
             RefreshToken string `json:"refresh_token"`
+            Red bool `json:"is_chirpy_red"`
         }
 
         reqBody := userData{}
@@ -385,6 +403,7 @@ func wrapperLogin(crp *chirps, confApi *configApi) (login http.HandlerFunc) {
                         Email: v.Email,
                         Token: tokenString,
                         RefreshToken: refreshTokenString,
+                        Red: v.Red,
                     }
                     jresp, _ := json.MarshalIndent(userDataResp, "", "    ")
                     // fmt.Println("Sending back:", string(jresp))
@@ -441,6 +460,7 @@ func wrapperUpdateUser(crps *chirps, confApi *configApi) (updateUser http.Handle
 		type response struct {
 			Id    int    `json:"id"`
 			Email string `json:"email"`
+            Red bool `json:"is_chirpy_red"`
 		}
 
 		userId, _ := token.Claims.GetSubject()
@@ -453,6 +473,7 @@ func wrapperUpdateUser(crps *chirps, confApi *configApi) (updateUser http.Handle
 				jresp, _ := json.Marshal(response{
 					Id:    crps.Users[i].Id,
 					Email: crps.Users[i].Email,
+					Red: crps.Users[i].Red,
 				})
 				w.Write(jresp)
 				return
@@ -526,6 +547,48 @@ func wrapperRevokeToken (crp *chirps, confApi *configApi) (http.HandlerFunc) {
     }
 }
 
+func (crp *chirps) makeRed (w http.ResponseWriter, r *http.Request) {
+    type requestBody struct {
+        Event string `json:"event"`
+        Data  struct {
+            UserID int `json:"user_id"`
+        } `json:"data"`
+    }
+
+    tokenstr := r.Header.Get("Authorization")
+    tokenstr = strings.TrimPrefix(tokenstr, "ApiKey ")
+
+    if tokenstr != os.Getenv("POLKA_KEY") {
+        http.Error(w, "", 401)
+        return
+    }
+
+    req := requestBody{}
+    decoder := json.NewDecoder(r.Body)
+    err := decoder.Decode(&req)
+    if err != nil {
+        http.Error(w, err.Error(), 400)
+    }
+    fmt.Println("Request:", req)
+
+    if req.Event != "user.upgraded" {
+        http.Error(w, "", 204)
+        return
+    }
+
+    for i, v := range crp.Users {
+        if v.Id == req.Data.UserID {
+            crp.Users[i].Red = true
+            w.WriteHeader(204)
+            w.Write(nil)
+            return
+        }
+    }
+
+    http.Error(w, "", 404)
+    return
+}
+
 func main() {
 	os.Remove("database.json")
 	godotenv.Load(".env")
@@ -564,6 +627,7 @@ func main() {
 	mux.HandleFunc("GET /api/metrics", apiCfg.hitCount)
 	mux.HandleFunc("GET /admin/metrics", apiCfg.hitCountAdmin)
 	mux.HandleFunc("/api/reset", apiCfg.resetCount)
+    mux.HandleFunc("POST /api/polka/webhooks", crps.makeRed)
 
 	fmt.Println("Serving on port:", port)
 	srv.ListenAndServe()
