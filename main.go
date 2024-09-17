@@ -241,14 +241,35 @@ func (crp *chirps) readChirps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-    if s := r.URL.Query().Get("author_id"); s != "" {
-        idint, _ := strconv.Atoi(s)
-        userschirps := []string{}
-        for _, v := range crp.Chirps {
-            if v.AuthorId == idint {
-                userschirps = append(userschirps, v.Body)
+    if r.URL.Query().Get("author_id") != "" || r.URL.Query().Get("sort") != "" {
+        id := r.URL.Query().Get("author_id")
+        idint, _ := strconv.Atoi(id)
+        userschirps := []chirp{}
+
+        sort := r.URL.Query().Get("sort")
+        switch sort {
+        case "asc":
+            fmt.Println("Ascending order")
+            for i := 0; i < len(crp.Chirps); i++ {
+                if id == "" {
+                    userschirps = append(userschirps, crp.Chirps[i])
+                } else if crp.Chirps[i].AuthorId == idint {
+                    userschirps = append(userschirps, crp.Chirps[i])
+                }
             }
+        case "desc":
+            fmt.Println("Descending order")
+            for i := len(crp.Chirps)-1; i >= 0; i-- {
+                if id == "" {
+                    userschirps = append(userschirps, crp.Chirps[i])
+                } else if crp.Chirps[i].AuthorId == idint {
+                    userschirps = append(userschirps, crp.Chirps[i])
+                }
+            }
+        default:
+            http.Error(w, fmt.Sprintf("Sorting method \"%v\" is not available\n"), 400)
         }
+
         jresp, _ := json.Marshal(userschirps)
         w.Header().Add("Content-Type", "application/json")
         w.Write(jresp)
